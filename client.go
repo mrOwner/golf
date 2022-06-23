@@ -34,8 +34,8 @@ type Client struct {
 	queueCtl chan int
 	sendCtl  chan int
 
-	gz *gzip.Writer
-	zz *zlib.Writer
+	gz *sync.Pool
+	zz *sync.Pool
 
 	config ClientConfig
 }
@@ -120,14 +120,18 @@ func (c *Client) Dial(uri string) error {
 		return err
 	}
 
-	c.gz, err = gzip.NewWriterLevel(c.chnk, gzip.DefaultCompression)
-	if err != nil {
-		return err
+	c.gz = &sync.Pool{
+		New: func() interface{} {
+			gz, _ := gzip.NewWriterLevel(c.chnk, gzip.DefaultCompression)
+			return gz
+		},
 	}
 
-	c.zz, err = zlib.NewWriterLevel(c.chnk, zlib.DefaultCompression)
-	if err != nil {
-		return err
+	c.zz = &sync.Pool{
+		New: func() interface{} {
+			zz, _ := zlib.NewWriterLevel(c.chnk, zlib.DefaultCompression)
+			return zz
+		},
 	}
 
 	go c.queueReceiver()
@@ -256,13 +260,17 @@ func (c *Client) writeMsg(data string, w io.Writer, compression int) error {
 
 	switch compression {
 	case COMP_GZIP:
-		c.gz.Reset(c.chnk)
-		c.gz.Write([]byte(data))
-		c.gz.Flush()
+		gz := c.gz.Get().(*gzip.Writer)
+		gz.Write([]byte(data))
+		gz.Close()
+		gz.Reset(c.chnk)
+		c.gz.Put(gz)
 	case COMP_ZLIB:
-		c.zz.Reset(c.chnk)
-		c.zz.Write([]byte(data))
-		c.zz.Flush()
+		zz := c.zz.Get().(*zlib.Writer)
+		zz.Write([]byte(data))
+		zz.Close()
+		zz.Reset(c.chnk)
+		c.zz.Put(zz)
 	default:
 		c.chnk.Write([]byte(data))
 	}
