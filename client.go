@@ -25,12 +25,17 @@ type Client struct {
 
 	conn net.Conn
 
+	chnk *chunker
+
 	queue      []*Message
 	queueMutex sync.Mutex
 
 	msgChan  chan *Message
 	queueCtl chan int
 	sendCtl  chan int
+
+	gz *gzip.Writer
+	zz *zlib.Writer
 
 	config ClientConfig
 }
@@ -109,6 +114,21 @@ func (c *Client) Dial(uri string) error {
 		return err
 	}
 	c.conn = conn
+
+	c.chnk, err = newChunker(c.conn, c.config.ChunkSize)
+	if err != nil {
+		return err
+	}
+
+	c.gz, err = gzip.NewWriterLevel(c.chnk, gzip.DefaultCompression)
+	if err != nil {
+		return err
+	}
+
+	c.zz, err = zlib.NewWriterLevel(c.chnk, zlib.DefaultCompression)
+	if err != nil {
+		return err
+	}
 
 	go c.queueReceiver()
 	go c.msgSender()
@@ -232,29 +252,19 @@ func (c *Client) msgSender() {
 }
 
 func (c *Client) writeMsg(data string, w io.Writer, compression int) error {
-	chnk, err := newChunker(w, c.config.ChunkSize)
-	if err != nil {
-		return err
-	}
-	defer chnk.Flush()
+	defer c.chnk.Flush()
 
 	switch compression {
 	case COMP_GZIP:
-		gz, err := gzip.NewWriterLevel(chnk, gzip.DefaultCompression)
-		if err != nil {
-			return err
-		}
-		gz.Write([]byte(data))
-		gz.Close()
+		c.gz.Reset(c.chnk)
+		c.gz.Write([]byte(data))
+		c.gz.Flush()
 	case COMP_ZLIB:
-		zz, err := zlib.NewWriterLevel(chnk, zlib.DefaultCompression)
-		if err != nil {
-			return err
-		}
-		zz.Write([]byte(data))
-		zz.Close()
+		c.zz.Reset(c.chnk)
+		c.zz.Write([]byte(data))
+		c.zz.Flush()
 	default:
-		chnk.Write([]byte(data))
+		c.chnk.Write([]byte(data))
 	}
 
 	return nil
